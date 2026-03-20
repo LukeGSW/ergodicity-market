@@ -120,25 +120,44 @@ with st.sidebar:
 
     threshold_mode = st.radio(
         "Calcolo soglia",
-        options=["auto", "manual"],
+        options=["sem", "manual"],
         index=0,
+        format_func=lambda x: {
+            "sem":    "SEM — k × σ / √N  (raccomandato)",
+            "manual": "Manuale — valore fisso",
+        }[x],
         help=(
-            "**auto**: soglia = k × std(differenza storica)\n"
-            "**manual**: inserisci un valore fisso"
+            "**SEM**: Standard Error of the Mean = k × σ_globale / √N. "
+            "Fondamento statistico rigoroso: la rolling mean ha incertezza σ/√N. "
+            "Deviazioni oltre questa soglia sono statisticamente significative.\n\n"
+            "**Manuale**: inserisci un valore fisso (utile per confronto tra asset)."
         ),
     )
 
-    threshold_mult = 1.0
+    threshold_mult = 1.75
     manual_threshold = 0.0011
 
-    if threshold_mode == "auto":
-        threshold_mult = st.slider(
-            "Moltiplicatore k (× std)",
-            min_value=0.5,
-            max_value=3.0,
-            value=1.0,
-            step=0.25,
-            help="k=1.0 = 1 sigma. Valori più alti = soglia più permissiva.",
+    if threshold_mode == "sem":
+        threshold_mult = st.select_slider(
+            "Moltiplicatore k",
+            options=[1.00, 1.28, 1.50, 1.65, 1.75, 1.96, 2.00, 2.33, 2.58],
+            value=1.75,
+            format_func=lambda x: {
+                1.00: "1.00  (68% CI — 1σ)",
+                1.28: "1.28  (80% CI)",
+                1.50: "1.50  (87% CI)",
+                1.65: "1.65  (90% CI)",
+                1.75: "1.75  (92% CI — default)",
+                1.96: "1.96  (95% CI — standard scientifico)",
+                2.00: "2.00  (95.4% CI)",
+                2.33: "2.33  (98% CI)",
+                2.58: "2.58  (99% CI — molto conservativo)",
+            }.get(x, str(x)),
+            help=(
+                "k determina il livello di confidenza statistica della classificazione. "
+                "k=1.75 replica il valore ±0.0011 osservato per SPX/252g. "
+                "k=1.96 è il valore standard per test a 95% di confidenza."
+            ),
         )
     else:
         manual_threshold = st.number_input(
@@ -148,6 +167,7 @@ with st.sidebar:
             value=0.0011,
             step=0.0001,
             format="%.6f",
+            help="Valore fisso per |rolling_mean − expanding_mean|. Es: 0.0011 per SPX/252g.",
         )
 
     st.divider()
@@ -194,13 +214,29 @@ with st.expander("📖 Cos'è l'Ergodicità in Finanza? (leggi prima di proceder
     2. **Media temporale (rolling)** → `μ_T(t) = mean(r_{t-N}, ..., r_t)`: media locale degli ultimi N giorni
     3. **Media spaziale (expanding)** → `μ_E(t) = mean(r_1, ..., r_t)`: media globale dall'origine
     4. **Differenza** → `Δ(t) = μ_T(t) − μ_E(t)`: scostamento locale dalla media storica
-    5. **Soglia** → banda simmetrica ±σ: se `|Δ(t)| > soglia`, il giorno è **non ergodico**
+    5. **Soglia SEM** → `threshold = k × σ / √N`: se `|Δ(t)| > threshold`, il giorno è **non ergodico**
 
-    > **Nota sulla validità statistica:** la soglia in modalità `auto` è calcolata come
-    > k × deviazione standard della serie delle differenze. Con k=1 si classificano come
-    > non ergodici i giorni oltre 1 sigma — statisticamente il ~32% atteso per una distribuzione
-    > normale. Se il risultato effettivo si discosta significativamente, indica **non-normalità**
-    > della distribuzione (asimmetria, code pesanti), che è di per sé un'informazione preziosa.
+    ### Fondamento Statistico della Soglia (Standard Error of the Mean)
+
+    La rolling mean calcolata su N osservazioni ha un'incertezza statistica di **σ/√N**
+    (Standard Error of the Mean). Questo significa che, anche se il processo fosse
+    perfettamente ergodico, la rolling mean oscillerebbe attorno alla vera media con
+    questa ampiezza per puro effetto campionario.
+
+    Classificare come "non ergodico" una deviazione superiore a **k × σ/√N** equivale
+    a un test statistico sulla media con livello di confidenza associato a k:
+
+    | k | Confidenza | Interpretazione |
+    |---|------------|-----------------|
+    | 1.00 | 68.3% | Soglia molto sensibile (molti falsi positivi) |
+    | 1.75 | ~92% | Default — replica ±0.0011 per SPX/252g |
+    | 1.96 | 95.0% | Standard scientifico per test di ipotesi |
+    | 2.58 | 99.0% | Soglia conservativa (solo deviazioni estreme) |
+
+    > **Proprietà chiave:** la soglia SEM si restringe automaticamente aumentando N
+    > (finestre più lunghe → stime più precise → banda più stretta) e si allarga per
+    > asset più volatili (σ maggiore). Questo comportamento è fisicamente corretto
+    > e non si ottiene con approcci basati su std(diff).
     """)
 
 st.divider()
@@ -254,29 +290,51 @@ st.markdown(
     f"Stato attuale: **{result.status_label}**"
 )
 
-c1, c2, c3, c4, c5 = st.columns(5)
+# Riga 1: parametri della soglia SEM
+c1, c2, c3, c4 = st.columns(4)
 c1.metric(
-    "Finestra rolling",
+    "Finestra rolling N",
     f"{rolling_window}g",
-    help="Numero di giorni per la media temporale",
+    help="Numero di giorni per la media temporale (rolling mean)",
 )
 c2.metric(
-    "Soglia ergodicità",
-    f"±{result.threshold:.5f}",
-    help="Oltre questa soglia un giorno è classificato non ergodico",
+    "σ globale (log-return)",
+    f"{result.sigma_global:.5f}",
+    help="Deviazione standard dei log-return sull'intera storia disponibile",
 )
 c3.metric(
-    "% giorni non ergodici",
-    f"{result.pct_non_ergodic:.1f}%",
-    help=f"{result.n_non_ergodic:,} giorni su {result.n_total:,} analizzati",
+    "SEM = σ / √N",
+    f"{result.sem:.5f}",
+    help="Standard Error of the Mean: incertezza statistica della rolling mean su N osservazioni",
 )
 c4.metric(
+    "Soglia = k × SEM",
+    f"±{result.threshold:.5f}",
+    help=f"k={result.k_mult:.2f} → confidenza ~{min(99.9, 100*(1 - 2*(1-0.5*(1+__import__('math').erf(result.k_mult/2**0.5))))):.1f}%",
+)
+
+st.markdown("")  # piccolo spazio
+
+# Riga 2: risultati
+r1, r2, r3, r4 = st.columns(4)
+r1.metric(
+    "Giorni analizzati",
+    f"{result.n_total:,}",
+    help="Giorni totali con dati sufficienti per calcolare rolling e expanding mean",
+)
+r2.metric(
+    "Giorni non ergodici",
+    f"{result.n_non_ergodic:,}",
+    delta=f"{result.pct_non_ergodic:.1f}% del totale",
+    delta_color="inverse" if result.pct_non_ergodic > 15 else "normal",
+)
+r3.metric(
     "Differenza attuale",
     f"{result.current_diff:.5f}",
     delta=f"{'DENTRO' if result.is_ergodic_now else 'FUORI'} banda",
     delta_color="normal" if result.is_ergodic_now else "inverse",
 )
-c5.metric(
+r4.metric(
     "Stato attuale",
     "ERGODICO ✅" if result.is_ergodic_now else "NON ERGODICO ⚠️",
     help="Basato sull'ultimo valore disponibile della differenza",
@@ -476,14 +534,41 @@ with st.expander("🔬 Metodologia, Note Tecniche e Riferimenti"):
     - **Media temporale (rolling):** `μ_T(t) = mean(r_{{t-N+1}}, ..., r_t)`, N = {rolling_window}
     - **Media spaziale (expanding):** `μ_E(t) = mean(r_1, ..., r_t)` (min {rolling_window} osservazioni)
     - **Differenza:** `Δ(t) = μ_T(t) − μ_E(t)`
-    - **Soglia:** {'`' + threshold_mode + '` = ' + str(threshold_mult) + ' × std(Δ) = ' + f'{result.threshold:.6f}' if threshold_mode == 'auto' else f'`manual` = {result.threshold:.6f}'}
+    - **Soglia (SEM):** `threshold = k × σ / √N` — Standard Error of the Mean
+      - `σ_globale` = `{result.sigma_global:.6f}` (deviazione standard di tutti i log-return)
+      - `SEM = σ/√N` = `{result.sigma_global:.6f}` / √{rolling_window} = `{result.sem:.6f}`
+      - `k` = `{result.k_mult:.2f}` → soglia = `{result.threshold:.6f}`
+    - **Modalità soglia:** `{threshold_mode}` {'(Standard Error of the Mean, raccomandato)' if threshold_mode == 'sem' else '(valore fisso inserito manualmente)'}
     - **Classificazione:** giorno non ergodico ⟺ `|Δ(t)| > {result.threshold:.6f}`
+
+    ### Fondamento Statistico della Soglia SEM
+
+    La rolling mean calcolata su N osservazioni i.i.d. con deviazione standard σ ha
+    un'incertezza statistica pari a **σ/√N** (Standard Error of the Mean). Una deviazione
+    |Δ| = |rolling − expanding| che supera **k × σ/√N** è statisticamente significativa
+    al livello di confidenza corrispondente a k:
+
+    | k | Confidenza | Interpretazione |
+    |---|-----------|-----------------|
+    | 1.00 | 68.3% | 1-sigma (test permissivo) |
+    | 1.75 | ~92%  | **Default — replica ±0.0011 per SPX/252g** |
+    | 1.96 | 95.0% | Standard scientifico (2-sigma) |
+    | 2.58 | 99.0% | Test molto conservativo |
+
+    Proprietà desiderabili rispetto a soglie basate su `std(Δ)`:
+    - ✓ Scala con la volatilità dell'asset (asset più volatili → banda più larga)
+    - ✓ Si restringe al crescere di N (finestre più lunghe → stime più precise)
+    - ✓ È interpretabile come test t sulla media con N gradi di libertà
+    - ✓ Non è influenzata da autocorrelazione della serie Δ stessa
 
     ### Statistiche della differenza Δ
     | Metrica | Valore |
     |---------|--------|
-    | Media | `{diff_stats["media"]:.8f}` |
-    | Std | `{diff_stats["std"]:.8f}` |
+    | σ globale (log-return) | `{result.sigma_global:.8f}` |
+    | SEM = σ/√N | `{result.sem:.8f}` |
+    | Soglia = k × SEM | `{result.threshold:.8f}` |
+    | Media Δ | `{diff_stats["media"]:.8f}` |
+    | Std Δ | `{diff_stats["std"]:.8f}` |
     | Skewness | `{diff_stats["skewness"]:.4f}` |
     | Kurtosis (excess) | `{diff_stats["kurtosis_excess"]:.4f}` |
     | 5° percentile | `{diff_stats["percentile_5"]:.8f}` |
