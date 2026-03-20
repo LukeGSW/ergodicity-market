@@ -1,0 +1,15 @@
+[theme]
+base = "dark"
+primaryColor = "#2196F3"
+backgroundColor = "#0D0D0D"
+secondaryBackgroundColor = "#161616"
+textColor = "#E0E0E0"
+font = "sans serif"
+
+[server]
+headless = true
+port = 8501
+
+[client]
+showErrorDetails = false
+toolbarMode = "viewer"
