@@ -4,11 +4,35 @@ calculations.py — Logica quantitativa per lo studio dell'Ergodicità del Merca
 Questo modulo implementa il nucleo matematico dell'analisi:
   - Calcolo dei rendimenti logaritmici
   - Media temporale (rolling) e media spaziale (expanding)
-  - Classificazione dei giorni ergodici / non ergodici
+  - Classificazione dei giorni ergodici / non ergodici basata sul SEM
   - Statistiche riepilogative e analisi per decennio
 
+═══════════════════════════════════════════════════════════════
+FONDAMENTO TEORICO DELLA SOGLIA — Standard Error of the Mean
+═══════════════════════════════════════════════════════════════
+La soglia di ergodicità è calcolata come:
+
+    threshold = k × σ / √N
+
+dove:
+  σ = deviazione standard globale dei log-return (stima della vera volatilità)
+  N = finestra rolling (es. 252 giorni = 1 anno di trading)
+  k = moltiplicatore di confidenza (k=1.96 → 95% CI, k=1.75 → 92% CI)
+
+Questa formula è lo Standard Error of the Mean (SEM): la rolling mean su N
+osservazioni ha una precisione statistica di σ/√N intorno al suo valore atteso.
+Una deviazione |rolling_mean − expanding_mean| > k × σ/√N è quindi
+"statisticamente significativa" al livello di confidenza corrispondente a k.
+
+Proprietà desiderabili (assenti nella formula std(diff)):
+  ✓ Scala con la volatilità dell'asset (asset più volatili → banda più larga)
+  ✓ Si restringe al crescere di N (finestre più lunghe → stime più precise)
+  ✓ È interpretabile: corrisponde a un test t sulla media con N gradi di libertà
+  ✓ Replica il valore ±0.0011 osservato per SPX/252g (k≈1.75)
+
 Riferimento teorico:
-  Ole Peters (2019) — "The ergodicity problem in economics", Nature Physics.
+  Ole Peters (2019) — "The ergodicity problem in economics", Nature Physics 15.
+  Peters & Gell-Mann (2016) — "Evaluating gambles using dynamics", Chaos 26.
   Nassim N. Taleb — "Ergodicity and Ensemble Average", Incerto series.
 """
 
@@ -39,7 +63,10 @@ class ErgodicityResult:
 
     Attributes:
         df:              DataFrame arricchito con tutte le colonne calcolate
-        threshold:       Valore soglia usato per la classificazione
+        threshold:       Valore soglia usato per la classificazione (= k × σ / √N)
+        sigma_global:    Deviazione standard globale dei log-return (σ)
+        sem:             Standard Error of the Mean puro (σ / √N, senza moltiplicatore)
+        k_mult:          Moltiplicatore k usato (threshold = k × sem)
         n_total:         Numero totale di giorni analizzati
         n_non_ergodic:   Numero di giorni classificati non ergodici
         pct_non_ergodic: Percentuale giorni non ergodici
@@ -49,6 +76,9 @@ class ErgodicityResult:
     """
     df: pd.DataFrame
     threshold: float
+    sigma_global: float
+    sem: float
+    k_mult: float
     n_total: int
     n_non_ergodic: int
     pct_non_ergodic: float
@@ -81,8 +111,8 @@ def compute_log_returns(price: pd.Series) -> pd.Series:
 def compute_ergodicity_metrics(
     df: pd.DataFrame,
     rolling_window: int = TRADING_DAYS_YEAR,
-    threshold_mode: Literal["auto", "manual"] = "auto",
-    threshold_mult: float = 1.0,
+    threshold_mode: Literal["sem", "manual"] = "sem",
+    threshold_mult: float = 1.75,
     manual_threshold: float = 0.0011,
     price_col: str | None = None,
 ) -> ErgodicityResult:
@@ -95,20 +125,31 @@ def compute_ergodicity_metrics(
       3. Calcola rolling_mean (media temporale) su finestra `rolling_window`
       4. Calcola expanding_mean (media spaziale) dall'origine
       5. diff = rolling_mean - expanding_mean
-      6. Soglia: auto = k * std(diff), oppure manuale = valore fisso
+      6. Soglia SEM: threshold = k × σ_globale / √N  (Standard Error of the Mean)
+         oppure soglia manuale: valore fisso
       7. Flag non ergodico: |diff| > soglia
       8. Calcola statistiche riepilogative
+
+    SOGLIA — Standard Error of the Mean (SEM):
+      La rolling mean calcolata su N osservazioni i.i.d. con std σ ha incertezza σ/√N.
+      La deviazione |rolling − expanding| è "statisticamente significativa" (non ergodica)
+      quando supera k × σ/√N.
+      - k=1.00 → 68.3% confidence interval (1-sigma)
+      - k=1.75 → ~92%  confidence interval (replica ±0.0011 per SPX/252g)
+      - k=1.96 → 95.0% confidence interval (standard scientifico)
+      - k=2.58 → 99.0% confidence interval (test molto conservativo)
 
     Args:
         df:               DataFrame con colonne OHLCV (e opzionalmente adjusted_close)
         rolling_window:   Finestra per la rolling mean (default 252 = 1 anno trading)
-        threshold_mode:   'auto' calcola la soglia come k*std(diff); 'manual' usa valore fisso
-        threshold_mult:   Moltiplicatore k per modalità 'auto' (default 1.0 = 1-sigma)
+        threshold_mode:   'sem' = k × σ/√N (Standard Error of the Mean, raccomandato);
+                          'manual' = valore fisso
+        threshold_mult:   Moltiplicatore k per modalità 'sem' (default 1.75 ≈ 92% CI)
         manual_threshold: Valore soglia fisso per modalità 'manual'
         price_col:        Colonna prezzo da usare (None = auto-detect adjusted_close/close)
 
     Returns:
-        ErgodicityResult con DataFrame arricchito e statistiche complete
+        ErgodicityResult con DataFrame arricchito, soglia, σ, SEM e statistiche complete
     """
     result_df = df.copy()
 
@@ -151,15 +192,24 @@ def compute_ergodicity_metrics(
     clean = result_df.dropna(subset=["rolling_mean", "expanding_mean", "diff"]).copy()
 
     # === 6. Soglia ergodicità ===
-    if threshold_mode == "auto":
-        # 1-sigma sulla distribuzione delle differenze storiche.
-        # Interpretazione: giorni in cui lo scostamento supera 1 deviazione standard
-        # della distribuzione storica delle differenze sono classificati non ergodici.
-        threshold = threshold_mult * clean["diff"].std()
+    # σ globale: deviazione standard sull'intera serie dei log-return disponibili.
+    # È la migliore stima della "vera" volatilità dell'asset.
+    sigma_global = float(result_df["log_ret"].dropna().std())
+
+    if threshold_mode == "sem":
+        # Standard Error of the Mean: incertezza statistica della rolling mean su N obs.
+        # Fondamento: la rolling mean X̄_N ha distribuzione con std = σ / √N per grandi N.
+        # Deviazioni oltre k × σ/√N sono significative al livello di confidenza di k-sigma.
+        sem = sigma_global / np.sqrt(rolling_window)
+        threshold = threshold_mult * sem
     else:
+        # Modalità manuale: soglia fissa inserita dall'utente
+        sem = sigma_global / np.sqrt(rolling_window)   # calcolato per display
         threshold = float(manual_threshold)
 
     # === 7. Classificazione giorni ===
+    # Un giorno è non ergodico quando la deviazione locale dalla media storica
+    # supera statisticamente la soglia scelta.
     clean["is_non_ergodic"] = clean["diff"].abs() > threshold
 
     # === 8. Statistiche finali ===
@@ -173,6 +223,9 @@ def compute_ergodicity_metrics(
     return ErgodicityResult(
         df=clean,
         threshold=threshold,
+        sigma_global=sigma_global,
+        sem=sem,
+        k_mult=threshold_mult if threshold_mode == "sem" else (threshold / sem),
         n_total=n_total,
         n_non_ergodic=n_non_ergodic,
         pct_non_ergodic=pct_non_ergodic,
