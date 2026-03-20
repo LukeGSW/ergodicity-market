@@ -71,7 +71,7 @@ with st.sidebar:
     cols = st.columns(4)
     selected_shortcut = None
     for i, s in enumerate(shortcuts):
-        if cols[i % 4].button(s, key=f"btn_{s}", use_container_width=True):
+        if cols[i % 4].button(s, key=f"btn_{s}", width="stretch"):
             selected_shortcut = s
 
     # --- Input ticker manuale ---
@@ -359,7 +359,7 @@ differenza tra media rolling e media expanding ha superato la soglia di ergodici
 """)
 
 fig1 = build_price_chart(result, ticker_label)
-st.plotly_chart(fig1, use_container_width=True)
+st.plotly_chart(fig1, width="stretch")
 
 st.divider()
 
@@ -390,7 +390,7 @@ Questo è il **grafico centrale** dell'analisi di ergodicità.
 """)
 
 fig2 = build_means_chart(result, ticker_label)
-st.plotly_chart(fig2, use_container_width=True)
+st.plotly_chart(fig2, width="stretch")
 
 st.divider()
 
@@ -421,7 +421,7 @@ L'istogramma mostra la **distribuzione statistica** di tutte le differenze
 """)
 
 fig3 = build_diff_histogram(result, ticker_label)
-st.plotly_chart(fig3, use_container_width=True)
+st.plotly_chart(fig3, width="stretch")
 
 st.divider()
 
@@ -445,7 +445,7 @@ Valori di riferimento storici per **{ticker_label}**:
 """)
 
 fig4 = build_rolling_pct_chart(result, ticker_label)
-st.plotly_chart(fig4, use_container_width=True)
+st.plotly_chart(fig4, width="stretch")
 
 st.divider()
 
@@ -468,7 +468,7 @@ col_chart, col_table = st.columns([1.2, 1])
 
 with col_chart:
     fig5 = build_decade_bar_chart(decade_stats)
-    st.plotly_chart(fig5, use_container_width=True)
+    st.plotly_chart(fig5, width="stretch")
 
 with col_table:
     st.markdown("**Statistiche dettagliate per decennio:**")
@@ -508,7 +508,7 @@ with col_table:
             "Diff Std": "{:.6f}",
         })
         .map(color_pct, subset=["% Non Erg."]),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
