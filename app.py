@@ -421,17 +421,35 @@ with col_table:
     display_stats.columns = [
         "Decennio", "Giorni", "Non Ergodici", "% Non Erg.", "Diff Media", "Diff Std"
     ]
+    # Colora la colonna "% Non Erg." con gradiente rosso/giallo/verde via CSS puro
+    # (senza dipendenza da matplotlib, che background_gradient richiede a runtime)
+    avg_pct_decade = display_stats["% Non Erg."].mean()
+
+    def color_pct(val):
+        """Restituisce il colore CSS in base alla % rispetto alla media storica."""
+        try:
+            v = float(str(val).replace("%", ""))
+        except ValueError:
+            return ""
+        if v > avg_pct_decade * 1.3:
+            return "background-color: #8B1A1A; color: #FFD0D0"   # rosso scuro
+        elif v > avg_pct_decade:
+            return "background-color: #B35C00; color: #FFE0B0"   # arancio
+        elif v > avg_pct_decade * 0.7:
+            return "background-color: #5D7A1A; color: #E0F0B0"   # giallo-verde
+        else:
+            return "background-color: #1A5C1A; color: #C0F0C0"   # verde
+
     st.dataframe(
-        display_stats.style.format({
+        display_stats.style
+        .format({
             "Giorni": "{:,.0f}",
             "Non Ergodici": "{:,.0f}",
             "% Non Erg.": "{:.1f}%",
             "Diff Media": "{:.6f}",
             "Diff Std": "{:.6f}",
-        }).background_gradient(
-            subset=["% Non Erg."],
-            cmap="RdYlGn_r",
-        ),
+        })
+        .map(color_pct, subset=["% Non Erg."]),
         use_container_width=True,
         hide_index=True,
     )
