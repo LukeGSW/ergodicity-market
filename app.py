@@ -19,12 +19,15 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 
+import json
+
 from src.data_fetcher import fetch_ohlcv, resolve_ticker, TICKER_MAP
 from src.calculations import (
     compute_ergodicity_metrics,
     compute_decade_stats,
     compute_diff_statistics,
 )
+from src.export import build_ergodicity_export
 from src.charts import (
     build_price_chart,
     build_means_chart,
@@ -245,12 +248,14 @@ st.divider()
 # ============================================================
 # FETCH DATI
 # ============================================================
-end_date_str = date.today().strftime("%Y-%m-%d")
+# EODHD tronca a ~19.000 record per chiamata: non passare from_date all'API
+# ma scaricare l'intera storia e filtrare lato Python.
+end_date_str   = date.today().strftime("%Y-%m-%d")
 start_date_str = start_date.strftime("%Y-%m-%d")
 
 with st.spinner(f"⏳ Caricamento dati per **{ticker_label}** ({eodhd_ticker})..."):
     try:
-        df_raw = fetch_ohlcv(eodhd_ticker, start_date_str, end_date_str, EODHD_API_KEY)
+        df_full = fetch_ohlcv(eodhd_ticker, end_date_str, EODHD_API_KEY)
     except Exception as e:
         st.error(f"❌ Errore nel caricamento dati: {e}")
         st.info(
@@ -259,8 +264,18 @@ with st.spinner(f"⏳ Caricamento dati per **{ticker_label}** ({eodhd_ticker})..
         )
         st.stop()
 
-if df_raw.empty:
+if df_full.empty:
     st.warning(f"⚠️ Nessun dato trovato per **{eodhd_ticker}**. Verifica ticker e date.")
+    st.stop()
+
+# Filtro per start_date lato Python (non API) → evita troncamento dati recenti
+df_raw = df_full[df_full.index >= pd.Timestamp(start_date_str)]
+
+if df_raw.empty:
+    st.warning(
+        f"⚠️ Nessun dato per **{eodhd_ticker}** a partire dal {start_date_str}. "
+        "Prova una data di partenza più recente."
+    )
     st.stop()
 
 
@@ -593,6 +608,28 @@ with st.expander("🔬 Metodologia, Note Tecniche e Riferimenti"):
     - Per asset con storia breve (< 5 anni), l'expanding mean potrebbe essere poco stabile
       nelle prime osservazioni.
     """)
+
+
+# ============================================================
+# EXPORT JSON
+# ============================================================
+st.markdown("---")
+st.subheader("⬇ Esporta dati per ricerca alpha")
+st.markdown(
+    "Scarica il JSON completo con time series, regime alpha, alpha signals e statistiche "
+    "strutturati per analisi esterne (Python, R, Excel, ecc.)."
+)
+_export_payload = build_ergodicity_export(
+    result, decade_stats, diff_stats, eodhd_ticker, ticker_label
+)
+_json_bytes = json.dumps(_export_payload, ensure_ascii=False, indent=2).encode("utf-8")
+st.download_button(
+    label="⬇ Scarica JSON Backtest",
+    data=_json_bytes,
+    file_name=f"ergodicity_{eodhd_ticker.replace('.', '_')}_{date.today()}.json",
+    mime="application/json",
+    help="JSON strutturato per ricerca di insight e alpha: time series, regime alpha, segnali, statistiche.",
+)
 
 
 # ============================================================
