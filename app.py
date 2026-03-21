@@ -27,7 +27,7 @@ from src.calculations import (
     compute_decade_stats,
     compute_diff_statistics,
 )
-from src.export import build_ergodicity_export
+from src.export import build_ergodicity_export, NumpyEncoder
 from src.charts import (
     build_price_chart,
     build_means_chart,
@@ -623,7 +623,7 @@ try:
     _export_payload = build_ergodicity_export(
         result, decade_stats, diff_stats, eodhd_ticker, ticker_label
     )
-    _json_bytes = json.dumps(_export_payload, ensure_ascii=False, indent=2).encode("utf-8")
+    _json_bytes = json.dumps(_export_payload, ensure_ascii=False, indent=2, cls=NumpyEncoder).encode("utf-8")
     st.download_button(
         label="⬇ Scarica JSON Backtest",
         data=_json_bytes,
