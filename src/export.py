@@ -31,6 +31,24 @@ from src.calculations import ErgodicityResult
 
 
 # ================================================================
+# CUSTOM JSON ENCODER — gestisce tipi numpy non serializzabili
+# ================================================================
+
+class NumpyEncoder(json.JSONEncoder):
+    """Encoder JSON che converte i tipi numpy in primitivi Python."""
+    def default(self, obj):
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return None if (np.isnan(obj) or np.isinf(obj)) else float(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
+
+# ================================================================
 # FORWARD RETURNS FORWARD UTILITY (locali al modulo)
 # ================================================================
 
