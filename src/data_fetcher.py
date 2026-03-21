@@ -47,20 +47,22 @@ TICKER_MAP: dict[str, tuple[str, str]] = {
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_ohlcv(
     ticker: str,
-    start: str,
     end: str,
     api_key: str,
 ) -> pd.DataFrame:
     """
-    Scarica e cacha dati OHLCV adjusted da EODHD Historical Data API.
+    Scarica l'intera storia disponibile da EODHD per il ticker richiesto.
 
-    La risposta viene cachata per 1 ora (ttl=3600) così da non effettuare
-    chiamate ridondanti durante la stessa sessione Streamlit.
+    Il parametro `from` non viene passato all'API per evitare il troncamento:
+    EODHD restituisce al massimo ~19.000 record per chiamata. Se si parte dal 1950
+    con un asset longevo (es. SPX), il limite viene raggiunto e i dati più recenti
+    vengono tagliati. Scaricando senza from_date e filtrando lato Python si ottiene
+    sempre l'ultima candela disponibile.
 
     Args:
         ticker:  Simbolo nel formato EODHD (es. 'GSPC.INDX', 'SPY.US', 'BTC-USD.CC')
-        start:   Data inizio (YYYY-MM-DD)
-        end:     Data fine   (YYYY-MM-DD)
+        end:     Data fine 'YYYY-MM-DD' — esplicita nella firma perché
+                 entra nella chiave della cache e la invalida ogni giorno.
         api_key: Chiave API EODHD (da st.secrets)
 
     Returns:
@@ -69,11 +71,11 @@ def fetch_ohlcv(
 
     Raises:
         requests.HTTPError: se la risposta API non è 2xx
-        ValueError:         se nessun dato è disponibile per il periodo/ticker
+        ValueError:         se nessun dato è disponibile per il ticker
     """
     url = (
         f"https://eodhd.com/api/eod/{ticker}"
-        f"?from={start}&to={end}"
+        f"?to={end}"
         f"&period=d&api_token={api_key}&fmt=json"
     )
     resp = requests.get(url, timeout=30)
@@ -82,8 +84,8 @@ def fetch_ohlcv(
     data = resp.json()
     if not data:
         raise ValueError(
-            f"Nessun dato disponibile per '{ticker}' nel periodo {start} → {end}. "
-            "Verifica il ticker e le date."
+            f"Nessun dato disponibile per '{ticker}'. "
+            "Verifica il ticker."
         )
 
     df = pd.DataFrame(data)
