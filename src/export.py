@@ -113,6 +113,10 @@ def _build_time_series(df_fwd: pd.DataFrame, threshold: float) -> list[dict]:
             "log_ret":          _safe_float(row.get("log_ret")),
             "rolling_mean":     _safe_float(row.get("rolling_mean")),
             "expanding_mean":   _safe_float(row.get("expanding_mean")),
+            "ensemble_mean":    _safe_float(row.get("ensemble_mean")),
+            "ne_gap":           _safe_float(row.get("ne_gap")),
+            "sigma_local":      _safe_float(row.get("sigma_local")),
+            "z_score":          _safe_float(row.get("z_score")),
             "diff":             _safe_float(row.get("diff")),
             "abs_diff":         _safe_float(abs(row.get("diff", np.nan))),
             "threshold":        round(threshold, 8),
@@ -207,20 +211,33 @@ def _build_regime_alpha(df_fwd: pd.DataFrame) -> dict:
 # SEZIONE 4 — ALPHA SIGNALS (transizioni di regime)
 # ================================================================
 
-def _build_alpha_signals(df_fwd: pd.DataFrame, threshold: float) -> list[dict]:
+def _build_alpha_signals(
+    df_fwd: pd.DataFrame, threshold: float, method: str = "vol_drag"
+) -> list[dict]:
     """
     Pre-filtra i giorni di transizione di regime come segnali operativi:
       - NON_ERGODIC_ENTRY : primo giorno non ergodico dopo un periodo ergodico
       - NON_ERGODIC_EXIT  : primo giorno ergodico dopo un periodo non ergodico
-      - EXTREME_DIFF_HIGH : |diff| > 2 × threshold (stress estremo)
-      - EXTREME_DIFF_LOW  : |diff| < 0.1 × threshold (compressione)
+      - EXTREME_HIGH      : stress estremo (z>2k in vol_drag, |Δ|>2·soglia in legacy)
+      - EXTREME_LOW       : compressione (drag sotto la norma / |Δ| molto piccola)
+
+    Lo "stress_ratio" è normalizzato sulla soglia attiva, quindi confrontabile tra
+    metodi: in vol_drag = z_score / k, in legacy = |Δ| / (k·σ/√N).
     """
+    is_vd = method == "vol_drag"
     signals = []
     prev_ne = None
 
     for dt, row in df_fwd.iterrows():
         is_ne = bool(row.get("is_non_ergodic", False))
-        abs_diff = abs(float(row.get("diff", 0)))
+        # Segnale di stress: z-score in vol_drag, |Δ| in legacy
+        if is_vd:
+            z = float(row.get("z_score", np.nan))
+            score = z                              # può essere negativo (compressione)
+            stress_ratio = (z / threshold) if threshold else None
+        else:
+            score = abs(float(row.get("diff", 0)))
+            stress_ratio = (score / threshold) if threshold else None
 
         signal_type = None
         if prev_ne is not None:
@@ -229,19 +246,20 @@ def _build_alpha_signals(df_fwd: pd.DataFrame, threshold: float) -> list[dict]:
             elif not is_ne and prev_ne:
                 signal_type = "NON_ERGODIC_EXIT"
 
-        if abs_diff > 2 * threshold:
-            signal_type = "EXTREME_DIFF_HIGH"
-        elif abs_diff < 0.1 * threshold:
-            signal_type = "EXTREME_DIFF_LOW"
+        if stress_ratio is not None and not np.isnan(score):
+            if stress_ratio > 2.0:
+                signal_type = "EXTREME_HIGH"
+            elif (is_vd and stress_ratio < -1.0) or (not is_vd and stress_ratio < 0.1):
+                signal_type = "EXTREME_LOW"
 
         if signal_type:
             rec = {
-                "date":        dt.strftime("%Y-%m-%d"),
-                "signal":      signal_type,
-                "diff":        _safe_float(row.get("diff")),
-                "abs_diff":    _safe_float(abs_diff),
-                "threshold":   round(threshold, 8),
-                "stress_ratio": _safe_float(abs_diff / threshold) if threshold else None,
+                "date":         dt.strftime("%Y-%m-%d"),
+                "signal":       signal_type,
+                "diff":         _safe_float(row.get("diff")),
+                "z_score":      _safe_float(row.get("z_score")),
+                "threshold":    round(threshold, 8),
+                "stress_ratio": _safe_float(stress_ratio),
             }
             for label in _FWD_WINDOWS:
                 rec[f"fwd_{label}"] = _safe_float(row.get(f"fwd_{label}"))
@@ -334,10 +352,11 @@ def build_ergodicity_export(
             "end_date":          result.df.index[-1].strftime("%Y-%m-%d"),
             "n_observations":    result.n_total,
             "parameters": {
-                "rolling_window":    int(result.df["rolling_mean"].rolling(2).count().max()),
-                "threshold_mode":    "sem",
-                "k_multiplier":      _safe_float(result.k_mult),
+                "method":            result.method,
+                "rolling_window":    int(result.rolling_window),
                 "threshold":         _safe_float(result.threshold),
+                "threshold_meaning": "z_cutoff" if result.method == "vol_drag" else "abs_diff",
+                "k_multiplier":      _safe_float(result.k_mult),
                 "sigma_global":      _safe_float(result.sigma_global),
                 "sem":               _safe_float(result.sem),
             },
@@ -345,6 +364,7 @@ def build_ergodicity_export(
                 "n_non_ergodic":     result.n_non_ergodic,
                 "pct_non_ergodic":   _safe_float(result.pct_non_ergodic),
                 "current_diff":      _safe_float(result.current_diff),
+                "current_z":         _safe_float(result.current_z),
                 "is_ergodic_now":    result.is_ergodic_now,
                 "status_label":      result.status_label,
             },
@@ -352,7 +372,7 @@ def build_ergodicity_export(
         "time_series":          _build_time_series(df_fwd, result.threshold),
         "non_ergodic_runs":     _build_non_ergodic_runs(df_fwd),
         "regime_alpha":         _build_regime_alpha(df_fwd),
-        "alpha_signals":        _build_alpha_signals(df_fwd, result.threshold),
+        "alpha_signals":        _build_alpha_signals(df_fwd, result.threshold, result.method),
         "decade_stats":         _build_decade_stats(decade_stats),
         "statistical_summary":  _build_statistical_summary(df_fwd, diff_stats),
     }
