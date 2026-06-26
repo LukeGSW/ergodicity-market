@@ -163,11 +163,14 @@ def build_price_chart(result: ErgodicityResult, ticker_label: str) -> go.Figure:
 
 def build_means_chart(result: ErgodicityResult, ticker_label: str) -> go.Figure:
     """
-    Grafico 2: confronto tra media temporale (rolling, ciano) e media spaziale
-    (expanding, arancio punteggiato) con banda di ergodicità (verde tratteggiato).
+    Grafico 2 — Media temporale vs media d'insieme.
 
-    Le linee di soglia sono FISSE a ±threshold (non relative all'expanding mean),
-    centrate sullo zero della differenza, come nell'app originale.
+    In modalità 'vol_drag' mostra la media d'insieme adattiva (aritmetica) e la
+    media temporale (geometrica): l'area tra le due È il volatility drag
+    (non-ergodicità). I giorni di eccesso (z > k) sono evidenziati in rosso.
+
+    In modalità 'drift_divergence' (legacy) mostra rolling vs expanding mean dei
+    log-return con banda di ergodicità fissa a ±threshold.
 
     Args:
         result:       ErgodicityResult da calculations.py
@@ -176,6 +179,58 @@ def build_means_chart(result: ErgodicityResult, ticker_label: str) -> go.Figure:
     Returns:
         go.Figure
     """
+    if result.method == "vol_drag":
+        return _build_means_chart_vol_drag(result, ticker_label)
+    return _build_means_chart_legacy(result, ticker_label)
+
+
+def _build_means_chart_vol_drag(result: ErgodicityResult, ticker_label: str) -> go.Figure:
+    df = result.df
+    df_ne = df[df["is_non_ergodic"]]
+
+    fig = go.Figure()
+
+    # Media temporale (geometrica) — ciano: la base su cui si appoggia il drag
+    fig.add_trace(go.Scatter(
+        x=df.index,
+        y=df["rolling_mean"],
+        name="Media temporale (geometrica)",
+        line=dict(color=COLORS["rolling"], width=1.2),
+        hovertemplate="g_tempo: %{y:.6f}<extra></extra>",
+    ))
+
+    # Media d'insieme (aritmetica, adattiva) — arancio; fill = volatility drag
+    fig.add_trace(go.Scatter(
+        x=df.index,
+        y=df["ensemble_mean"],
+        name="Media d'insieme (aritmetica)",
+        line=dict(color=COLORS["expanding"], width=1.4),
+        fill="tonexty",
+        fillcolor="rgba(255,152,0,0.14)",
+        hovertemplate="g_insieme: %{y:.6f}<extra></extra>",
+    ))
+
+    # Eccessi non ergodici (z > k) — punti rossi sulla media d'insieme
+    fig.add_trace(go.Scatter(
+        x=df_ne.index,
+        y=df_ne["ensemble_mean"],
+        name=f"Eccesso non ergodico (z>{result.threshold:.2f})",
+        mode="markers",
+        marker=dict(color=COLORS["non_ergodic"], size=4, opacity=0.8),
+        hovertemplate="%{x|%Y-%m-%d}<br><b>Eccesso non ergodico</b><extra></extra>",
+    ))
+
+    layout = _base_layout(
+        title=f"{ticker_label} – Media temporale vs d'insieme — l'area è il volatility drag",
+        x_title="Data",
+        y_title="Crescita per-periodo (rendimento semplice)",
+        height=460,
+    )
+    fig.update_layout(**layout)
+    return fig
+
+
+def _build_means_chart_legacy(result: ErgodicityResult, ticker_label: str) -> go.Figure:
     df = result.df
     thr = result.threshold
 
@@ -249,46 +304,70 @@ def build_diff_histogram(result: ErgodicityResult, ticker_label: str) -> go.Figu
     Returns:
         go.Figure
     """
-    diff = result.df["diff"].dropna()
     thr = result.threshold
+    is_vd = result.method == "vol_drag"
+
+    # In vol_drag l'istogramma è sullo z-score (segnale di rilevazione), con
+    # un'unica soglia positiva (one-sided). In legacy è sulla differenza Δ con
+    # soglie simmetriche ±threshold.
+    signal = (result.df["z_score"] if is_vd else result.df["diff"]).dropna()
+    x_title = "z-score (eccesso di drag)" if is_vd else "Differenza"
+    title = (
+        "Distribuzione dello z-score del volatility drag con soglia"
+        if is_vd else
+        "Distribuzione della differenza (rolling − expanding) con soglie"
+    )
+    fmt = ":.3f" if is_vd else ":.6f"
 
     fig = go.Figure()
 
     fig.add_trace(go.Histogram(
-        x=diff,
-        name="Differenza",
+        x=signal,
+        name="Segnale",
         nbinsx=100,
         marker_color=COLORS["histogram"],
         opacity=0.88,
-        hovertemplate="Diff: %{x:.6f}<br>Frequenza: %{y}<extra></extra>",
+        hovertemplate=f"Valore: %{{x{fmt}}}<br>Frequenza: %{{y}}<extra></extra>",
     ))
 
-    # Linea soglia inferiore
-    fig.add_vline(
-        x=-thr,
-        line_color=COLORS["threshold_g3"],
-        line_dash="dash",
-        line_width=2,
-        annotation_text="–soglia",
-        annotation_position="top left",
-        annotation_font_color=COLORS["threshold_g3"],
-        annotation_font_size=11,
-    )
-    # Linea soglia superiore
-    fig.add_vline(
-        x=thr,
-        line_color=COLORS["threshold_g3"],
-        line_dash="dash",
-        line_width=2,
-        annotation_text="+soglia",
-        annotation_position="top right",
-        annotation_font_color=COLORS["threshold_g3"],
-        annotation_font_size=11,
-    )
+    if is_vd:
+        # Soglia singola: eccesso ⟺ z > k
+        fig.add_vline(
+            x=thr,
+            line_color=COLORS["threshold_g3"],
+            line_dash="dash",
+            line_width=2,
+            annotation_text=f"soglia z={thr:.2f}",
+            annotation_position="top right",
+            annotation_font_color=COLORS["threshold_g3"],
+            annotation_font_size=11,
+        )
+    else:
+        # Soglie simmetriche ±threshold
+        fig.add_vline(
+            x=-thr,
+            line_color=COLORS["threshold_g3"],
+            line_dash="dash",
+            line_width=2,
+            annotation_text="–soglia",
+            annotation_position="top left",
+            annotation_font_color=COLORS["threshold_g3"],
+            annotation_font_size=11,
+        )
+        fig.add_vline(
+            x=thr,
+            line_color=COLORS["threshold_g3"],
+            line_dash="dash",
+            line_width=2,
+            annotation_text="+soglia",
+            annotation_position="top right",
+            annotation_font_color=COLORS["threshold_g3"],
+            annotation_font_size=11,
+        )
 
     layout = _base_layout(
-        title=f"Distribuzione della differenza (rolling − expanding) con soglie",
-        x_title="Differenza",
+        title=title,
+        x_title=x_title,
         y_title="Frequenza",
         height=400,
     )
@@ -319,7 +398,8 @@ def build_rolling_pct_chart(result: ErgodicityResult, ticker_label: str) -> go.F
         go.Figure
     """
     df = result.df
-    rolling_pct = df["is_non_ergodic"].rolling(TRADING_DAYS_YEAR).mean() * 100
+    win = result.rolling_window
+    rolling_pct = df["is_non_ergodic"].rolling(win).mean() * 100
     avg_pct = result.pct_non_ergodic
 
     fig = go.Figure()
@@ -327,7 +407,7 @@ def build_rolling_pct_chart(result: ErgodicityResult, ticker_label: str) -> go.F
     fig.add_trace(go.Scatter(
         x=rolling_pct.index,
         y=rolling_pct,
-        name=f"% non ergodici (rolling {TRADING_DAYS_YEAR}g)",
+        name=f"% non ergodici (rolling {win}g)",
         fill="tozeroy",
         line=dict(color=COLORS["accent"], width=1.4),
         fillcolor="rgba(171,71,188,0.18)",
@@ -347,7 +427,7 @@ def build_rolling_pct_chart(result: ErgodicityResult, ticker_label: str) -> go.F
     )
 
     layout = _base_layout(
-        title=f"{ticker_label} – % Giorni Non Ergodici (rolling {TRADING_DAYS_YEAR}g)",
+        title=f"{ticker_label} – % Giorni Non Ergodici (rolling {win}g)",
         x_title="Data",
         y_title="% Non Ergodici",
         height=380,
