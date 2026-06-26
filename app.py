@@ -112,6 +112,24 @@ with st.sidebar:
     # --- Parametri ergodicità ---
     st.markdown("**Parametri ergodicità:**")
 
+    method = st.radio(
+        "Metodo di rilevazione",
+        options=["vol_drag", "drift_divergence"],
+        index=0,
+        format_func=lambda x: {
+            "vol_drag":         "Volatility drag — eccessi (raccomandato)",
+            "drift_divergence": "Drift divergence — legacy (rolling vs expanding)",
+        }[x],
+        help=(
+            "**Volatility drag**: confronta media d'insieme (aritmetica) e media "
+            "temporale (geometrica). La differenza ≈ ½·σ²_locale è la vera "
+            "non-ergodicità e spara durante gli ECCESSI. Soglia su z-score con "
+            "volatilità locale.\n\n"
+            "**Drift divergence**: metodo storico — rolling mean vs expanding mean "
+            "dei log-return, soglia SEM. Rileva cambi di drift, non gli eccessi."
+        ),
+    )
+
     rolling_window = st.slider(
         "Finestra rolling (giorni)",
         min_value=21,
@@ -121,57 +139,70 @@ with st.sidebar:
         help="252 = 1 anno di trading. Finestre più corte sono più reattive ma meno stabili.",
     )
 
-    threshold_mode = st.radio(
-        "Calcolo soglia",
-        options=["sem", "manual"],
-        index=0,
-        format_func=lambda x: {
-            "sem":    "SEM — k × σ / √N  (raccomandato)",
-            "manual": "Manuale — valore fisso",
-        }[x],
-        help=(
-            "**SEM**: Standard Error of the Mean = k × σ_globale / √N. "
-            "Fondamento statistico rigoroso: la rolling mean ha incertezza σ/√N. "
-            "Deviazioni oltre questa soglia sono statisticamente significative.\n\n"
-            "**Manuale**: inserisci un valore fisso (utile per confronto tra asset)."
-        ),
-    )
-
+    # Default condivisi
+    threshold_mode = "sem"
     threshold_mult = 1.75
     manual_threshold = 0.0011
 
-    if threshold_mode == "sem":
+    if method == "vol_drag":
         threshold_mult = st.select_slider(
-            "Moltiplicatore k",
+            "Soglia z (eccesso di drag)",
             options=[1.00, 1.28, 1.50, 1.65, 1.75, 1.96, 2.00, 2.33, 2.58],
             value=1.75,
-            format_func=lambda x: {
-                1.00: "1.00  (68% CI — 1σ)",
-                1.28: "1.28  (80% CI)",
-                1.50: "1.50  (87% CI)",
-                1.65: "1.65  (90% CI)",
-                1.75: "1.75  (92% CI — default)",
-                1.96: "1.96  (95% CI — standard scientifico)",
-                2.00: "2.00  (95.4% CI)",
-                2.33: "2.33  (98% CI)",
-                2.58: "2.58  (99% CI — molto conservativo)",
-            }.get(x, str(x)),
+            format_func=lambda x: f"z > {x:.2f}",
             help=(
-                "k determina il livello di confidenza statistica della classificazione. "
-                "k=1.75 replica il valore ±0.0011 osservato per SPX/252g. "
-                "k=1.96 è il valore standard per test a 95% di confidenza."
+                "Un giorno è un eccesso non ergodico quando il volatility drag "
+                "supera di k deviazioni standard la sua norma adattiva (EWMA). "
+                "z>1.75 ≈ top ~4% dei giorni; z>2.33 più selettivo."
             ),
         )
     else:
-        manual_threshold = st.number_input(
-            "Soglia manuale",
-            min_value=0.00001,
-            max_value=0.1,
-            value=0.0011,
-            step=0.0001,
-            format="%.6f",
-            help="Valore fisso per |rolling_mean − expanding_mean|. Es: 0.0011 per SPX/252g.",
+        threshold_mode = st.radio(
+            "Calcolo soglia",
+            options=["sem", "manual"],
+            index=0,
+            format_func=lambda x: {
+                "sem":    "SEM — k × σ / √N  (raccomandato)",
+                "manual": "Manuale — valore fisso",
+            }[x],
+            help=(
+                "**SEM**: Standard Error of the Mean = k × σ_globale / √N. "
+                "Fondamento statistico: la rolling mean ha incertezza σ/√N.\n\n"
+                "**Manuale**: inserisci un valore fisso (utile per confronto tra asset)."
+            ),
         )
+
+        if threshold_mode == "sem":
+            threshold_mult = st.select_slider(
+                "Moltiplicatore k",
+                options=[1.00, 1.28, 1.50, 1.65, 1.75, 1.96, 2.00, 2.33, 2.58],
+                value=1.75,
+                format_func=lambda x: {
+                    1.00: "1.00  (68% CI — 1σ)",
+                    1.28: "1.28  (80% CI)",
+                    1.50: "1.50  (87% CI)",
+                    1.65: "1.65  (90% CI)",
+                    1.75: "1.75  (92% CI — default)",
+                    1.96: "1.96  (95% CI — standard scientifico)",
+                    2.00: "2.00  (95.4% CI)",
+                    2.33: "2.33  (98% CI)",
+                    2.58: "2.58  (99% CI — molto conservativo)",
+                }.get(x, str(x)),
+                help=(
+                    "k determina il livello di confidenza statistica della classificazione. "
+                    "k=1.96 è il valore standard per test a 95% di confidenza."
+                ),
+            )
+        else:
+            manual_threshold = st.number_input(
+                "Soglia manuale",
+                min_value=0.00001,
+                max_value=0.1,
+                value=0.0011,
+                step=0.0001,
+                format="%.6f",
+                help="Valore fisso per |rolling_mean − expanding_mean|. Es: 0.0011 per SPX/252g.",
+            )
 
     st.divider()
     st.caption("📡 Dati: EODHD Historical Data")
@@ -286,6 +317,7 @@ with st.spinner("⚙️ Calcolo metriche di ergodicità..."):
     result = compute_ergodicity_metrics(
         df=df_raw,
         rolling_window=rolling_window,
+        method=method,
         threshold_mode=threshold_mode,
         threshold_mult=threshold_mult,
         manual_threshold=manual_threshold,
@@ -297,36 +329,53 @@ with st.spinner("⚙️ Calcolo metriche di ergodicità..."):
 # ============================================================
 # SEZIONE 1 — KPI METRICHE
 # ============================================================
+_is_vd = result.method == "vol_drag"
+_soglia_str = f"z > {result.threshold:.2f}" if _is_vd else f"±{result.threshold:.4f}"
+
 st.subheader(f"📋 Riepilogo — {ticker_label}")
 st.markdown(
     f"**{ticker_label}** &nbsp;•&nbsp; Finestra: {rolling_window}g &nbsp;•&nbsp; "
-    f"Soglia: ±{result.threshold:.4f} &nbsp;•&nbsp; "
+    f"Metodo: {'Volatility drag' if _is_vd else 'Drift divergence'} &nbsp;•&nbsp; "
+    f"Soglia: {_soglia_str} &nbsp;•&nbsp; "
     f"Giorni non ergodici: {result.pct_non_ergodic:.1f}% &nbsp;•&nbsp; "
     f"Stato attuale: **{result.status_label}**"
 )
 
-# Riga 1: parametri della soglia SEM
+# Riga 1: parametri della soglia
 c1, c2, c3, c4 = st.columns(4)
 c1.metric(
     "Finestra rolling N",
     f"{rolling_window}g",
-    help="Numero di giorni per la media temporale (rolling mean)",
+    help="Numero di giorni per le medie rolling (temporale e d'insieme)",
 )
 c2.metric(
     "σ globale (log-return)",
     f"{result.sigma_global:.5f}",
     help="Deviazione standard dei log-return sull'intera storia disponibile",
 )
-c3.metric(
-    "SEM = σ / √N",
-    f"{result.sem:.5f}",
-    help="Standard Error of the Mean: incertezza statistica della rolling mean su N osservazioni",
-)
-c4.metric(
-    "Soglia = k × SEM",
-    f"±{result.threshold:.5f}",
-    help=f"k={result.k_mult:.2f} → confidenza ~{min(99.9, 100*(1 - 2*(1-0.5*(1+__import__('math').erf(result.k_mult/2**0.5))))):.1f}%",
-)
+if _is_vd:
+    _mean_drag = float(result.df["ne_gap"].mean())
+    c3.metric(
+        "Drag medio ≈ ½σ²",
+        f"{_mean_drag:.6f}",
+        help="Volatility drag medio = media d'insieme − media temporale (non-ergodicità media)",
+    )
+    c4.metric(
+        "Soglia z (one-sided)",
+        f"z > {result.threshold:.2f}",
+        help="Un giorno è un eccesso quando lo z-score del drag supera questa soglia",
+    )
+else:
+    c3.metric(
+        "SEM = σ / √N",
+        f"{result.sem:.5f}",
+        help="Standard Error of the Mean: incertezza statistica della rolling mean su N osservazioni",
+    )
+    c4.metric(
+        "Soglia = k × SEM",
+        f"±{result.threshold:.5f}",
+        help=f"k={result.k_mult:.2f} → confidenza ~{min(99.9, 100*(1 - 2*(1-0.5*(1+__import__('math').erf(result.k_mult/2**0.5))))):.1f}%",
+    )
 
 st.markdown("")  # piccolo spazio
 
@@ -335,7 +384,7 @@ r1, r2, r3, r4 = st.columns(4)
 r1.metric(
     "Giorni analizzati",
     f"{result.n_total:,}",
-    help="Giorni totali con dati sufficienti per calcolare rolling e expanding mean",
+    help="Giorni totali con dati sufficienti per i calcoli rolling",
 )
 r2.metric(
     "Giorni non ergodici",
@@ -343,16 +392,24 @@ r2.metric(
     delta=f"{result.pct_non_ergodic:.1f}% del totale",
     delta_color="inverse" if result.pct_non_ergodic > 15 else "normal",
 )
-r3.metric(
-    "Differenza attuale",
-    f"{result.current_diff:.5f}",
-    delta=f"{'DENTRO' if result.is_ergodic_now else 'FUORI'} banda",
-    delta_color="normal" if result.is_ergodic_now else "inverse",
-)
+if _is_vd:
+    r3.metric(
+        "z-score attuale",
+        f"{result.current_z:.2f}",
+        delta=f"{'SOTTO' if result.is_ergodic_now else 'OLTRE'} soglia",
+        delta_color="normal" if result.is_ergodic_now else "inverse",
+    )
+else:
+    r3.metric(
+        "Differenza attuale",
+        f"{result.current_diff:.5f}",
+        delta=f"{'DENTRO' if result.is_ergodic_now else 'FUORI'} banda",
+        delta_color="normal" if result.is_ergodic_now else "inverse",
+    )
 r4.metric(
     "Stato attuale",
     "ERGODICO ✅" if result.is_ergodic_now else "NON ERGODICO ⚠️",
-    help="Basato sull'ultimo valore disponibile della differenza",
+    help="Basato sull'ultimo valore disponibile del segnale",
 )
 
 st.divider()
@@ -382,8 +439,25 @@ st.divider()
 # ============================================================
 # SEZIONE 3 — GRAFICO 2: MEDIE + BANDA ERGODICITÀ
 # ============================================================
-st.subheader("📊 Grafico 2 — Media Temporale vs Media Spaziale")
-st.markdown(f"""
+if _is_vd:
+    st.subheader("📊 Grafico 2 — Media Temporale vs Media d'Insieme (volatility drag)")
+    st.markdown(f"""
+Questo è il **grafico centrale** dell'analisi di ergodicità.
+
+| Linea | Tipo | Descrizione |
+|-------|------|-------------|
+| 🔵 Ciano | Media temporale (geometrica) | `expm1(mean_{rolling_window}(log-return))`: ciò che la traiettoria compone |
+| 🟠 Arancio | Media d'insieme (aritmetica) | `mean_{rolling_window}(rendimenti semplici)`: il valore atteso (ensemble) |
+| 🔴 Punti rossi | Eccesso non ergodico | Giorni con z-score del drag oltre la soglia (z > {result.threshold:.2f}) |
+
+**L'area tra le due linee È la non-ergodicità** (volatility drag ≈ ½·σ²_locale): si
+allarga quando la volatilità sale e le due medie divergono. A differenza del metodo
+legacy, la media d'insieme **non è più una costante inerte** ma si adatta al regime
+locale, quindi gli eccessi emergono nettamente invece di sparire nella media.
+""")
+else:
+    st.subheader("📊 Grafico 2 — Media Temporale vs Media Spaziale")
+    st.markdown(f"""
 Questo è il **grafico centrale** dell'analisi di ergodicità.
 
 | Linea | Tipo | Descrizione |
@@ -413,8 +487,30 @@ st.divider()
 # ============================================================
 # SEZIONE 4 — GRAFICO 3: DISTRIBUZIONE DIFFERENZE
 # ============================================================
-st.subheader("📉 Grafico 3 — Distribuzione della Differenza (Rolling − Expanding)")
-st.markdown(f"""
+if _is_vd:
+    st.subheader("📉 Grafico 3 — Distribuzione dello z-score del Volatility Drag")
+    st.markdown(f"""
+L'istogramma mostra la distribuzione dello **z-score** del volatility drag, cioè
+quanto è anomala la non-ergodicità di ogni giorno rispetto alla sua norma adattiva.
+
+- La **linea rossa** segna la soglia di eccesso (z > {result.threshold:.2f})
+- Le barre **a destra della soglia** sono i giorni di eccesso non ergodico
+- La coda destra pesante è il comportamento atteso: gli eccessi sono rari ma estremi.
+
+| Metrica (z-score) | Valore | Interpretazione |
+|---------|--------|-----------------|
+| Media | `{diff_stats["media"]:.3f}` | ≈ 0 per costruzione (segnale standardizzato) |
+| Std | `{diff_stats["std"]:.3f}` | ≈ 1 per costruzione |
+| Skewness | `{diff_stats["skewness"]:.3f}` | {'> 0: coda destra (cluster di eccessi)' if diff_stats["skewness"] > 0 else '≈ 0 / negativa'} |
+| Kurtosis | `{diff_stats["kurtosis_excess"]:.3f}` | {'> 0: code pesanti (eventi estremi frequenti)' if diff_stats["kurtosis_excess"] > 0 else '≈ normale'} |
+
+> 📌 **Giorni di eccesso:** **{diff_stats["pct_oltre_soglia"]:.1f}%** del totale superano
+> la soglia z > {result.threshold:.2f}. Alza k per essere più selettivo, abbassalo per
+> catturare anche gli eccessi moderati.
+""")
+else:
+    st.subheader("📉 Grafico 3 — Distribuzione della Differenza (Rolling − Expanding)")
+    st.markdown(f"""
 L'istogramma mostra la **distribuzione statistica** di tutte le differenze
 `Δ(t) = rolling_mean(t) − expanding_mean(t)` calcolate sull'intera serie storica.
 
@@ -534,8 +630,34 @@ st.divider()
 # SEZIONE 7 — EXPANDER METODOLOGIA E RIFERIMENTI
 # ============================================================
 with st.expander("🔬 Metodologia, Note Tecniche e Riferimenti"):
+    if _is_vd:
+        st.markdown(f"""
+    ## Metodo attivo: Volatility Drag (rilevazione eccessi)
+
+    La non-ergodicità è misurata come divergenza tra **media d'insieme** (aritmetica,
+    sui rendimenti semplici) e **media temporale** (geometrica, sui log-return), sulla
+    stessa finestra N = {rolling_window}:
+
+    - `g_insieme(t) = mean_N(P_t/P_{{t-1}} − 1)` — valore atteso (ensemble)
+    - `g_tempo(t)   = expm1(mean_N(ln(P_t/P_{{t-1}})))` — crescita composta (time)
+    - `ne_gap(t)    = g_insieme − g_tempo  ≈  ½·σ²_locale` — **volatility drag** (≥ 0)
+
+    L'eccesso è rilevato standardizzando il drag contro la sua norma **adattiva** ma
+    lenta (EWMA, halflife ≈ 2N → norma pluriennale) e flaggando `z(t) > k`:
+
+    - `z(t) = (ne_gap − EWMA_mean(ne_gap)) / EWMA_std(ne_gap)`
+    - Soglia attiva: **z > {result.threshold:.2f}** (one-sided)
+    - `σ_globale` = `{result.sigma_global:.6f}` (riferimento), drag medio storico mostrato nei KPI
+
+    Rispetto al metodo legacy questo risolve i due limiti strutturali: (1) la "media
+    spaziale" non è più la media expanding inerte dall'origine ma un ensemble adattivo;
+    (2) la soglia non usa un σ globale costante ma la **volatilità locale**, così la
+    classificazione è coerente fra regimi e fra asset.
+
+    ---
+    """)
     st.markdown(f"""
-    ## Metodologia
+    ## Metodologia (riferimento — metodo legacy SEM)
 
     ### Dati
     - **Fonte:** EODHD Historical Data API (`eodhd.com`)
